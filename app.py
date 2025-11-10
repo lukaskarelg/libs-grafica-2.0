@@ -135,7 +135,10 @@ def match_peaks(meas_wl, meas_counts, db_df, peaks_idx, tol_nm):
                 "db_wavelength": db_wl[best_i],
                 "delta_nm": diffs[best_i]
             })
-    return pd.DataFrame(matches).sort_values("meas_wavelength").reset_index(drop=True)
+    matches_df = pd.DataFrame(matches)
+if not matches_df.empty and "meas_wavelength" in matches_df.columns:
+    matches_df = matches_df.sort_values("meas_wavelength").reset_index(drop=True)
+return matches_df
 
 # ---- cargar datos ----
 try:
