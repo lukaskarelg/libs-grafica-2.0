@@ -1,9 +1,10 @@
 # app.py
 """
-Versión modificada: LIBS espectros discretos sin suavizado
-- Muestra picos discretos según los datos cargados
-- Filtra los valores menores al 10% del máximo de cuentas
-- Acepta bases de datos con formato "Wavelength (nm), Sum, ..."
+LIBS — versión con picos discretos tipo histograma
+- Gráfico de barras verticales (histograma de picos)
+- Etiquetas en cada barra
+- Color más oscuro para longitudes de onda repetidas
+- Permite cargar base de datos desde archivo o ingresarla manualmente
 """
 
 import streamlit as st
@@ -13,22 +14,20 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import io
 
-st.set_page_config(layout="wide", page_title="LIBS — Espectros discretos")
+st.set_page_config(layout="wide", page_title="LIBS — Picos discretos")
 
-st.title("🔬 LIBS — Gráfica de picos discretos y comparación con base de datos")
+st.title("🔬 LIBS — Espectros discretos tipo histograma con comparación")
 
-st.sidebar.header("Cargar archivos")
+st.sidebar.header("📂 Cargar archivos")
 
-# --- Subir archivos ---
-upload_measure = st.sidebar.file_uploader("Archivo de medidas (CSV)", type=["csv", "txt"])
-paste_measure = st.sidebar.text_area("O pega los datos (wavelength,counts)", height=120)
+# --- Entradas de datos ---
+upload_measure = st.sidebar.file_uploader("Archivo de medidas (CSV o TXT)", type=["csv", "txt"])
+paste_measure = st.sidebar.text_area("O pega los datos de medición (wavelength,counts)", height=120)
 
-upload_db = st.sidebar.file_uploader("Base de datos (CSV con columnas Wavelength (nm), Sum, ...)", type=["csv", "txt"])
+upload_db = st.sidebar.file_uploader("Base de datos (CSV o TXT)", type=["csv", "txt"])
+paste_db = st.sidebar.text_area("O pega la base de datos (formato: Wavelength (nm),Sum,...)", height=120)
 
 tolerance_nm = st.sidebar.number_input("Tolerancia de coincidencia (nm)", min_value=0.0, value=0.2, step=0.01)
-
-st.write("### Ejemplo de archivo de medidas")
-st.code("400.12,123\n400.25,130\n400.38,95", language="text")
 
 # --- Lectura flexible ---
 def read_measurements(file, pasted_text):
@@ -36,26 +35,28 @@ def read_measurements(file, pasted_text):
     if file is not None:
         df = pd.read_csv(file)
     elif pasted_text.strip():
-        df = pd.read_csv(io.StringIO(pasted_text), header=None, names=["wavelength","counts"])
+        df = pd.read_csv(io.StringIO(pasted_text), header=None, names=["wavelength", "counts"])
     if df is None:
         return None
-    # Normalizar nombres
+    # Normalizar columnas
     cols = [c.lower().strip() for c in df.columns]
     if "wavelength" not in cols or "counts" not in cols:
         if df.shape[1] >= 2:
             df = df.iloc[:, :2]
-            df.columns = ["wavelength","counts"]
+            df.columns = ["wavelength", "counts"]
     df["wavelength"] = pd.to_numeric(df["wavelength"], errors="coerce")
     df["counts"] = pd.to_numeric(df["counts"], errors="coerce")
-    df = df.dropna()
-    df = df.sort_values("wavelength").reset_index(drop=True)
+    df = df.dropna().sort_values("wavelength").reset_index(drop=True)
     return df
 
-def read_db(file):
-    if file is None:
+def read_db(file, pasted_text):
+    df = None
+    if file is not None:
+        df = pd.read_csv(file)
+    elif pasted_text.strip():
+        df = pd.read_csv(io.StringIO(pasted_text))
+    if df is None:
         return None
-    df = pd.read_csv(file)
-    # Buscar columnas correctas
     col_names = [c.lower() for c in df.columns]
     if "wavelength (nm)" in col_names and "sum" in col_names:
         df = df.rename(columns={
@@ -63,7 +64,6 @@ def read_db(file):
             df.columns[col_names.index("sum")]: "counts"
         })
     else:
-        # Tomar primeras dos columnas si los nombres no coinciden
         df = df.iloc[:, :2]
         df.columns = ["wavelength", "counts"]
     df["wavelength"] = pd.to_numeric(df["wavelength"], errors="coerce")
@@ -73,7 +73,7 @@ def read_db(file):
 
 # --- Cargar datos ---
 meas_df = read_measurements(upload_measure, paste_measure)
-db_df = read_db(upload_db)
+db_df = read_db(upload_db, paste_db)
 
 if meas_df is None:
     st.warning("Cargue un archivo o pegue datos de medidas para continuar.")
@@ -87,20 +87,32 @@ filtered = meas_df[meas_df["counts"] >= threshold].reset_index(drop=True)
 st.markdown(f"### 🔎 Filtro aplicado: se eliminaron valores menores al 10% del máximo ({threshold:.2e})")
 st.write(f"{len(filtered)} puntos conservados de {len(meas_df)} totales")
 
-# --- Gráfica discreta ---
-st.subheader("Gráfica de espectro (picos discretos)")
-fig, ax = plt.subplots(figsize=(10,4))
-ax.scatter(filtered["wavelength"], filtered["counts"], color="blue", s=30)
+# --- Colores según repetición ---
+counts_repeats = filtered["wavelength"].duplicated(keep=False)
+colors = ["#0040ff" if not rep else "#001a66" for rep in counts_repeats]  # azul oscuro si se repite
+
+# --- Gráfico tipo histograma ---
+st.subheader("Gráfica de espectro (picos discretos tipo histograma)")
+fig, ax = plt.subplots(figsize=(11, 5))
+bars = ax.bar(filtered["wavelength"], filtered["counts"], color=colors, width=0.05)
+
+# Etiquetas sobre cada barra
+for idx, row in filtered.iterrows():
+    y = row["counts"]
+    wl = row["wavelength"]
+    label_color = "black" if not counts_repeats[idx] else "#333333"
+    ax.text(wl, y * 1.02, f"{wl:.2f}", ha="center", va="bottom", fontsize=8, rotation=90, color=label_color)
+
 ax.set_xlabel("Longitud de onda (nm)")
 ax.set_ylabel("Cuentas")
+ax.set_title("Espectro LIBS — Picos discretos (≥10% del máximo)")
 ax.xaxis.set_major_locator(MaxNLocator(nbins=10, prune='both'))
-ax.set_title("Espectro LIBS — Picos filtrados (≥10% del máximo)")
 st.pyplot(fig)
 
 # --- Coincidencias con base ---
 def match_peaks(df_meas, df_db, tol):
     if df_db is None or df_db.empty:
-        return pd.DataFrame(columns=["wavelength_meas","counts_meas","wavelength_db","delta_nm"])
+        return pd.DataFrame(columns=["wavelength_meas", "counts_meas", "wavelength_db", "delta_nm"])
     matches = []
     wl_m = df_meas["wavelength"].values
     cnt_m = df_meas["counts"].values
@@ -123,7 +135,7 @@ st.markdown("---")
 st.subheader("Resultados de comparación con base de datos")
 
 if db_df is None:
-    st.info("No se cargó una base de datos de referencia.")
+    st.info("No se cargó ni pegó una base de datos de referencia.")
 else:
     matches = match_peaks(filtered, db_df, tolerance_nm)
     if matches.empty:
@@ -133,3 +145,4 @@ else:
         st.dataframe(matches)
         csv = matches.to_csv(index=False).encode("utf-8")
         st.download_button("Descargar coincidencias (CSV)", data=csv, file_name="coincidencias.csv", mime="text/csv")
+
