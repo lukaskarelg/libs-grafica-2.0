@@ -1,148 +1,217 @@
-# app.py
-"""
-LIBS — versión con picos discretos tipo histograma
-- Gráfico de barras verticales (histograma de picos)
-- Etiquetas en cada barra
-- Color más oscuro para longitudes de onda repetidas
-- Permite cargar base de datos desde archivo o ingresarla manualmente
-"""
-
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
-import io
 
-st.set_page_config(layout="wide", page_title="LIBS — Picos discretos")
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(page_title="Análisis LIBS & Comparación NIST", layout="wide")
 
-st.title("🔬 LIBS — Espectros discretos tipo histograma con comparación")
+st.title("🔬 Sistema de Análisis de Espectro LIBS")
+st.markdown("""
+Esta aplicación procesa datos espectrales, filtra el ruido de fondo y compara los picos encontrados 
+con una base de datos de líneas de emisión teóricas.
+""")
 
-st.sidebar.header("📂 Cargar archivos")
+# --- 1. CARGA DE DATOS EXPERIMENTALES ---
+st.sidebar.header("1. Carga de Datos")
+archivo_exp = st.sidebar.file_uploader("Subir archivo del espectrómetro (.txt)", type=["txt", "csv"])
 
-# --- Entradas de datos ---
-upload_measure = st.sidebar.file_uploader("Archivo de medidas (CSV o TXT)", type=["csv", "txt"])
-paste_measure = st.sidebar.text_area("O pega los datos de medición (wavelength,counts)", height=120)
+# --- 2. CARGA DE BASE DE DATOS (REFERENCIA) ---
+st.sidebar.header("2. Base de Datos (Referencias)")
+# Opción para subir la DB o usar una demo
+archivo_db = st.sidebar.file_uploader("Subir Base de Datos (.csv)", type=["csv"])
 
-upload_db = st.sidebar.file_uploader("Base de datos (CSV o TXT)", type=["csv", "txt"])
-paste_db = st.sidebar.text_area("O pega la base de datos (formato: Wavelength (nm),Sum,...)", height=120)
-
-tolerance_nm = st.sidebar.number_input("Tolerancia de coincidencia (nm)", min_value=0.0, value=0.2, step=0.01)
-
-# --- Lectura flexible ---
-def read_measurements(file, pasted_text):
-    df = None
-    if file is not None:
-        df = pd.read_csv(file)
-    elif pasted_text.strip():
-        df = pd.read_csv(io.StringIO(pasted_text), header=None, names=["wavelength", "counts"])
-    if df is None:
+def cargar_datos_experimentales(uploaded_file):
+    """
+    Lee el formato específico saltando 4 líneas y convirtiendo columnas.
+    """
+    try:
+        df = pd.read_csv(
+            uploaded_file,
+            skiprows=4,
+            sep='\t', 
+            header=None,
+            names=["Etiqueta", "Intensidad", "LongitudOnda"], # Renombrado para claridad
+            engine="python"
+        )
+        # Limpieza y conversión
+        df["Intensidad"] = pd.to_numeric(df["Intensidad"], errors='coerce')
+        df["LongitudOnda"] = pd.to_numeric(df["LongitudOnda"], errors='coerce')
+        df.dropna(inplace=True)
+        return df.sort_values(by="LongitudOnda")
+    except Exception as e:
+        st.error(f"Error leyendo el archivo experimental: {e}")
         return None
-    # Normalizar columnas
-    cols = [c.lower().strip() for c in df.columns]
-    if "wavelength" not in cols or "counts" not in cols:
-        if df.shape[1] >= 2:
-            df = df.iloc[:, :2]
-            df.columns = ["wavelength", "counts"]
-    df["wavelength"] = pd.to_numeric(df["wavelength"], errors="coerce")
-    df["counts"] = pd.to_numeric(df["counts"], errors="coerce")
-    df = df.dropna().sort_values("wavelength").reset_index(drop=True)
-    return df
 
-def read_db(file, pasted_text):
-    df = None
-    if file is not None:
-        df = pd.read_csv(file)
-    elif pasted_text.strip():
-        df = pd.read_csv(io.StringIO(pasted_text))
-    if df is None:
-        return None
-    col_names = [c.lower() for c in df.columns]
-    if "wavelength (nm)" in col_names and "sum" in col_names:
-        df = df.rename(columns={
-            df.columns[col_names.index("wavelength (nm)")]: "wavelength",
-            df.columns[col_names.index("sum")]: "counts"
-        })
-    else:
-        df = df.iloc[:, :2]
-        df.columns = ["wavelength", "counts"]
-    df["wavelength"] = pd.to_numeric(df["wavelength"], errors="coerce")
-    df["counts"] = pd.to_numeric(df["counts"], errors="coerce")
-    df = df.dropna().sort_values("wavelength").reset_index(drop=True)
-    return df
+def algoritmo_comparacion(picos_exp, df_ref, tolerancia=0.5):
+    """
+    Compara los picos experimentales con la base de datos dentro de una tolerancia (nm).
+    Retorna un DataFrame con los "matches".
+    """
+    resultados = []
 
-# --- Cargar datos ---
-meas_df = read_measurements(upload_measure, paste_measure)
-db_df = read_db(upload_db, paste_db)
+    # Iteramos por cada pico experimental encontrado
+    for idx, row_exp in picos_exp.iterrows():
+        wl_exp = row_exp['LongitudOnda']
+        int_exp = row_exp['Intensidad']
 
-if meas_df is None:
-    st.warning("Cargue un archivo o pegue datos de medidas para continuar.")
-    st.stop()
+        # Filtramos la DB buscando líneas cercanas (± tolerancia)
+        # Asumimos que la DB tiene columnas: ['Wavelength', 'Element', 'Ionization']
+        matches = df_ref[
+            (df_ref['Wavelength'] >= wl_exp - tolerancia) & 
+            (df_ref['Wavelength'] <= wl_exp + tolerancia)
+        ].copy()
 
-# --- Filtro 10% del máximo ---
-max_counts = meas_df["counts"].max()
-threshold = 0.1 * max_counts
-filtered = meas_df[meas_df["counts"] >= threshold].reset_index(drop=True)
+        if not matches.empty:
+            # Calculamos la diferencia absoluta
+            matches['Diferencia_nm'] = (matches['Wavelength'] - wl_exp).abs()
+            matches['Error_Relativo'] = matches['Diferencia_nm'] / matches['Wavelength']
+            
+            # Nos quedamos con el match más cercano (menor diferencia)
+            # Ojo: En LIBS real a veces hay solapamiento, aquí tomamos el "mejor candidato"
+            best_match = matches.loc[matches['Diferencia_nm'].idxmin()]
 
-st.markdown(f"### 🔎 Filtro aplicado: se eliminaron valores menores al 10% del máximo ({threshold:.2e})")
-st.write(f"{len(filtered)} puntos conservados de {len(meas_df)} totales")
-
-# --- Colores según repetición ---
-counts_repeats = filtered["wavelength"].duplicated(keep=False)
-colors = ["#0040ff" if not rep else "#001a66" for rep in counts_repeats]  # azul oscuro si se repite
-
-# --- Gráfico tipo histograma ---
-st.subheader("Gráfica de espectro (picos discretos tipo histograma)")
-fig, ax = plt.subplots(figsize=(11, 5))
-bars = ax.bar(filtered["wavelength"], filtered["counts"], color=colors, width=0.05)
-
-# Etiquetas sobre cada barra
-for idx, row in filtered.iterrows():
-    y = row["counts"]
-    wl = row["wavelength"]
-    label_color = "black" if not counts_repeats[idx] else "#333333"
-    ax.text(wl, y * 1.02, f"{wl:.2f}", ha="center", va="bottom", fontsize=8, rotation=90, color=label_color)
-
-ax.set_xlabel("Longitud de onda (nm)")
-ax.set_ylabel("Cuentas")
-ax.set_title("Espectro LIBS — Picos discretos (≥10% del máximo)")
-ax.xaxis.set_major_locator(MaxNLocator(nbins=10, prune='both'))
-st.pyplot(fig)
-
-# --- Coincidencias con base ---
-def match_peaks(df_meas, df_db, tol):
-    if df_db is None or df_db.empty:
-        return pd.DataFrame(columns=["wavelength_meas", "counts_meas", "wavelength_db", "delta_nm"])
-    matches = []
-    wl_m = df_meas["wavelength"].values
-    cnt_m = df_meas["counts"].values
-    wl_db = df_db["wavelength"].values
-    cnt_db = df_db["counts"].values
-    for i in range(len(wl_m)):
-        diffs = np.abs(wl_db - wl_m[i])
-        j = np.argmin(diffs)
-        if diffs[j] <= tol:
-            matches.append({
-                "wavelength_meas": wl_m[i],
-                "counts_meas": cnt_m[i],
-                "wavelength_db": wl_db[j],
-                "delta_nm": diffs[j],
-                "counts_db": cnt_db[j]
+            resultados.append({
+                "Wavelength Exp (nm)": wl_exp,
+                "Intensidad Exp": int_exp,
+                "Elemento": best_match['Element'],
+                "Ionización": best_match.get('Ionization', '-'),
+                "Wavelength Teórico (nm)": best_match['Wavelength'],
+                "Diferencia (nm)": best_match['Diferencia_nm'], # |Teorico - Exp|
+                "Probabilidad Relativa": best_match.get('Rel_Intensity', 'N/A') # Si la DB tiene intensidad relativa
             })
-    return pd.DataFrame(matches)
+    
+    return pd.DataFrame(resultados)
 
-st.markdown("---")
-st.subheader("Resultados de comparación con base de datos")
+# --- LÓGICA PRINCIPAL ---
 
-if db_df is None:
-    st.info("No se cargó ni pegó una base de datos de referencia.")
-else:
-    matches = match_peaks(filtered, db_df, tolerance_nm)
-    if matches.empty:
-        st.warning("No se encontraron coincidencias dentro de la tolerancia.")
-    else:
-        st.success(f"Se encontraron {len(matches)} coincidencias.")
-        st.dataframe(matches)
-        csv = matches.to_csv(index=False).encode("utf-8")
-        st.download_button("Descargar coincidencias (CSV)", data=csv, file_name="coincidencias.csv", mime="text/csv")
+if archivo_exp is not None:
+    # 1. Procesar Experimental
+    df_raw = cargar_datos_experimentales(archivo_exp)
+    
+    if df_raw is not None:
+        # 2. Filtrado (Tu lógica original)
+        max_val = df_raw["Intensidad"].max()
+        mean_val = df_raw["Intensidad"].mean()
+        
+        # Sliders para ajustar umbrales en tiempo real (Interactivo)
+        col1, col2 = st.columns(2)
+        factor_umbral = col1.slider("Factor de Umbral (sobre la media)", 0.1, 5.0, 0.9, 0.1)
+        umbral = factor_umbral * mean_val
+        
+        col2.metric("Umbral de Intensidad", f"{umbral:.2f}", delta_color="inverse")
+        
+        datos_filtrados = df_raw[df_raw["Intensidad"] >= umbral].copy()
+        
+        st.subheader("📊 Visualización del Espectro")
+        
+        # --- GRAFICACIÓN CON PLOTLY (Reemplaza Matplotlib) ---
+        fig = go.Figure()
+
+        # Trazo 1: Espectro completo (Fondo gris suave)
+        fig.add_trace(go.Scatter(
+            x=df_raw["LongitudOnda"], 
+            y=df_raw["Intensidad"],
+            mode='lines',
+            name='Espectro Bruto',
+            line=dict(color='lightgrey', width=1),
+            opacity=0.6
+        ))
+
+        # Trazo 2: Picos Detectados (Estilo "Barras delgadas" interactivo)
+        # Usamos mode='markers+lines' con un truco para parecer spikes o stem plot
+        fig.add_trace(go.Scatter(
+            x=datos_filtrados["LongitudOnda"],
+            y=datos_filtrados["Intensidad"],
+            mode='markers',
+            name='Picos Detectados',
+            marker=dict(color='red', size=6, symbol='diamond-open'),
+            text=[f"{x:.2f} nm" for x in datos_filtrados["LongitudOnda"]],
+            hovertemplate="<b>Ola:</b> %{x:.2f} nm<br><b>Int:</b> %{y:.2f} a.u."
+        ))
+
+        # Configuración del Layout para que parezca profesional
+        fig.update_layout(
+            title="Espectro de Emisión (Zoom habilitado)",
+            xaxis_title="Longitud de Onda [nm]",
+            yaxis_title="Intensidad [a.u]",
+            template="plotly_white",
+            height=500,
+            hovermode="x unified" # Muestra datos al pasar el mouse por el eje X
+        )
+        
+        # Agrega líneas verticales (spikes) interactivas al pasar el mouse
+        fig.update_xaxes(showspikes=True, spikecolor="green", spikesnap="cursor", spikemode="across")
+        fig.update_yaxes(showspikes=True, spikecolor="orange", spikethickness=2)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # --- SECCIÓN DE COMPARACIÓN DE BASE DE DATOS ---
+        st.markdown("---")
+        st.subheader("📚 Comparación con Base de Datos")
+
+        if archivo_db is not None:
+            # Asumimos que la DB tiene columnas: Wavelength, Element, Ionization, Rel_Intensity
+            # Ejemplo de formato CSV esperado:
+            # Wavelength,Element,Ionization,Rel_Intensity
+            # 589.00,Na,I,1000
+            
+            try:
+                df_ref = pd.read_csv(archivo_db)
+                # Normalizar nombres de columnas si es necesario
+                # Asegúrate de que tu CSV tenga al menos 'Wavelength' y 'Element'
+                
+                tolerancia = st.slider("Tolerancia de Búsqueda (nm)", 0.01, 1.0, 0.1)
+                
+                # Ejecutar algoritmo
+                df_resultados = algoritmo_comparacion(datos_filtrados, df_ref, tolerancia)
+                
+                if not df_resultados.empty:
+                    # Formateo de la tabla para resaltar diferencias
+                    st.write(f"Se encontraron **{len(df_resultados)}** coincidencias probables.")
+                    
+                    # Estilizar la tabla (Pandas Styler)
+                    st.dataframe(
+                        df_resultados.style.format({
+                            "Wavelength Exp (nm)": "{:.3f}",
+                            "Wavelength Teórico (nm)": "{:.3f}",
+                            "Diferencia (nm)": "{:.4f}",
+                            "Intensidad Exp": "{:.1f}"
+                        }).background_gradient(subset=["Diferencia (nm)"], cmap="Reds"),
+                        use_container_width=True
+                    )
+                    
+                    # Descargar reporte
+                    csv_res = df_resultados.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        "📥 Descargar Tabla de Comparación",
+                        csv_res,
+                        "reporte_libs.csv",
+                        "text/csv"
+                    )
+                    
+                    # Resumen de elementos encontrados
+                    st.write("#### 🧪 Elementos Detectados (Conteo de Picos)")
+                    conteo = df_resultados["Elemento"].value_counts().reset_index()
+                    conteo.columns = ["Elemento", "Cantidad de Picos"]
+                    st.bar_chart(conteo.set_index("Elemento"))
+                    
+                else:
+                    st.warning("No se encontraron coincidencias con la tolerancia actual.")
+
+            except Exception as e:
+                st.error(f"Error procesando la base de datos: {e}. Revisa que las columnas sean: Wavelength, Element, Ionization")
+        else:
+            st.info("👆 Por favor sube un archivo CSV con la Base de Datos para realizar la comparación.")
+            
+            # Generar CSV de ejemplo para el usuario
+            st.markdown("**¿No tienes una base de datos a mano?**")
+            ejemplo_db = pd.DataFrame({
+                "Wavelength": [589.0, 589.6, 309.2, 308.2, 656.3],
+                "Element": ["Na", "Na", "Al", "Al", "H"],
+                "Ionization": ["I", "I", "I", "I", "I"],
+                "Rel_Intensity": [1000, 500, 800, 600, 200]
+            })
+            csv_ejemplo = ejemplo_db.to_csv(index=False).encode('utf-8')
+            st.download_button("Descargar plantilla CSV ejemplo", csv_ejemplo, "db_referencia_ejemplo.csv")
 
