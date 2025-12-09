@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -214,4 +215,3 @@ if archivo_exp is not None:
             })
             csv_ejemplo = ejemplo_db.to_csv(index=False).encode('utf-8')
             st.download_button("Descargar plantilla CSV ejemplo", csv_ejemplo, "db_referencia_ejemplo.csv")
-
