@@ -106,44 +106,45 @@ if archivo_exp is not None:
         
         st.subheader("📊 Visualización del Espectro")
         
-        # --- GRAFICACIÓN CON PLOTLY (Reemplaza Matplotlib) ---
+       # --- GRAFICACIÓN CON PLOTLY (ESTILO DISCRETO / VLINES) ---
         fig = go.Figure()
 
-        # Trazo 1: Espectro completo (Fondo gris suave)
-        fig.add_trace(go.Scatter(
-            x=df_raw["LongitudOnda"], 
-            y=df_raw["Intensidad"],
-            mode='lines',
-            name='Espectro Bruto',
-            line=dict(color='lightgrey', width=1),
-            opacity=0.6
+        # 1. Las líneas verticales (Usamos Bar con ancho muy fino para simular vlines)
+        fig.add_trace(go.Bar(
+            x=datos_filtrados["LongitudOnda"],
+            y=datos_filtrados["Intensidad"],
+            width=0.3,                # <--- Ajusta esto: grosor de la línea en nm (muy fino)
+            marker_color='black',     # Color de la línea vertical
+            name='Magnitud',
+            hoverinfo='skip'          # Ocultamos info aquí para no duplicar con el punto
         ))
 
-        # Trazo 2: Picos Detectados (Estilo "Barras delgadas" interactivo)
-        # Usamos mode='markers+lines' con un truco para parecer spikes o stem plot
+        # 2. Los puntos rojos encima (Las cabezas de los picos)
         fig.add_trace(go.Scatter(
             x=datos_filtrados["LongitudOnda"],
             y=datos_filtrados["Intensidad"],
             mode='markers',
-            name='Picos Detectados',
-            marker=dict(color='red', size=6, symbol='diamond-open'),
-            text=[f"{x:.2f} nm" for x in datos_filtrados["LongitudOnda"]],
-            hovertemplate="<b>Ola:</b> %{x:.2f} nm<br><b>Int:</b> %{y:.2f} a.u."
+            name='Pico Detectado',
+            marker=dict(
+                color='red', 
+                size=7,               # Tamaño del punto
+                symbol='circle',
+                line=dict(color='white', width=1) # Borde blanco para resaltar
+            ),
+            # Tooltip profesional
+            hovertemplate="<b>Longitud de Onda:</b> %{x:.2f} nm<br><b>Intensidad:</b> %{y:.2f} a.u.<extra></extra>"
         ))
 
-        # Configuración del Layout para que parezca profesional
+        # Configuración del Layout
         fig.update_layout(
-            title="Espectro de Emisión (Zoom habilitado)",
+            title="Espectro Discreto (Picos Filtrados)",
             xaxis_title="Longitud de Onda [nm]",
             yaxis_title="Intensidad [a.u]",
             template="plotly_white",
-            height=500,
-            hovermode="x unified" # Muestra datos al pasar el mouse por el eje X
+            height=550,
+            showlegend=True,
+            bargap=0  # Asegura que las barras no se agrupen raro
         )
-        
-        # Agrega líneas verticales (spikes) interactivas al pasar el mouse
-        fig.update_xaxes(showspikes=True, spikecolor="green", spikesnap="cursor", spikemode="across")
-        fig.update_yaxes(showspikes=True, spikecolor="orange", spikethickness=2)
 
         st.plotly_chart(fig, use_container_width=True)
 
